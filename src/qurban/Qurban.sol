@@ -2,6 +2,8 @@
 pragma solidity ^0.8.27;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
 import {Governed} from "../dao/Governed.sol";
 import {Errors} from "../lib/Errors.sol";
 
@@ -38,6 +40,8 @@ interface IQurbanNFT {
  * @custom:security-contact security@qrbn.app
  */
 contract Qurban is Governed {
+    using SafeERC20 for IERC20;
+
     // ============ ENUMS ============
 
     /**
@@ -544,10 +548,17 @@ contract Qurban is Governed {
 
         Animal storage animal = s_animals[_animalId];
 
+        if (animal.status == AnimalStatus.SACRIFICED)
+            revert Errors.NotAvailable("animal for edit");
+
+        uint8 soldShares = animal.totalShares - animal.availableShares;
+        if (_totalShares < soldShares)
+            revert Errors.InvalidAmount("totalShares");
+
         animal.name = _name;
         animal.animalType = _animalType;
         animal.totalShares = _totalShares;
-        animal.availableShares = _totalShares;
+        animal.availableShares = _totalShares - soldShares;
         animal.pricePerShare = _pricePerShare;
         animal.location = _location;
         animal.image = _image;
@@ -557,6 +568,12 @@ contract Qurban is Governed {
         animal.age = _age;
         animal.farmName = _farmName;
         animal.sacrificeDate = _sacrificeDate;
+
+        if (soldShares > 0) {
+            animal.status = animal.availableShares == 0
+                ? AnimalStatus.SOLD
+                : AnimalStatus.AVAILABLE;
+        }
 
         emit AnimalUpdated(_animalId, msg.sender, _name);
     }
@@ -572,6 +589,10 @@ contract Qurban is Governed {
 
         if (animal.status == AnimalStatus.AVAILABLE)
             revert Errors.AlreadyAvailable("animal");
+        if (
+            animal.vendorAddress == address(0) ||
+            animal.status != AnimalStatus.PENDING
+        ) revert Errors.NotAvailable("animal for approval");
 
         animal.status = AnimalStatus.AVAILABLE;
         emit AnimalStatusUpdated(_animalId, AnimalStatus.AVAILABLE);
@@ -617,6 +638,8 @@ contract Qurban is Governed {
 
         if (animal.status != AnimalStatus.AVAILABLE)
             revert Errors.NotAvailable("animal");
+        if (block.timestamp >= animal.sacrificeDate)
+            revert Errors.InvalidDate("sacrificeDate");
         if (_shareAmount == 0 || animal.availableShares < _shareAmount)
             revert Errors.InvalidAmount("shareAmount");
 
@@ -624,7 +647,7 @@ contract Qurban is Governed {
         uint256 platformFee = (totalPaid * s_platformFeeBps) / BPS_BASE;
         uint256 vendorShare = totalPaid - platformFee;
 
-        i_usdc.transferFrom(msg.sender, address(this), totalPaid);
+        i_usdc.safeTransferFrom(msg.sender, address(this), totalPaid);
 
         s_vendors[animal.vendorAddress].totalSales += vendorShare;
 
@@ -708,9 +731,9 @@ contract Qurban is Governed {
                         abi.encodePacked(
                             _certificateURI,
                             "/",
-                            _animalId,
+                            Strings.toString(_animalId),
                             "/",
-                            txnId
+                            Strings.toString(txnId)
                         )
                     );
 
@@ -734,7 +757,7 @@ contract Qurban is Governed {
                     totalFee
                 );
 
-            i_usdc.approve(address(i_treasury), totalFee);
+            i_usdc.forceApprove(address(i_treasury), totalFee);
             i_treasury.depositFees(address(i_usdc), totalFee);
             s_totalCollectedFees += totalFee;
             emit FeesDeposited(address(i_treasury), totalFee);
@@ -754,7 +777,7 @@ contract Qurban is Governed {
                     totalVendorShare
                 );
 
-            i_usdc.transfer(animal.vendorAddress, totalVendorShare);
+            i_usdc.safeTransfer(animal.vendorAddress, totalVendorShare);
             s_vendorSharesPool -= totalVendorShare;
             emit VendorShareDistributed(
                 animal.vendorAddress,
@@ -782,8 +805,11 @@ contract Qurban is Governed {
     ) external onlyRole(GOVERNER_ROLE) {
         Animal storage animal = s_animals[_animalId];
 
-        if (animal.status != AnimalStatus.SOLD)
-            revert Errors.NotAvailable("animal for refund");
+        // Partly sold animals (still AVAILABLE) must be refundable too
+        if (
+            animal.status == AnimalStatus.SACRIFICED ||
+            animal.availableShares == animal.totalShares
+        ) revert Errors.NotAvailable("animal for refund");
         if (bytes(_reason).length == 0) revert Errors.EmptyString("reason");
 
         address[] memory buyers = s_animalBuyers[_animalId];
@@ -816,7 +842,7 @@ contract Qurban is Governed {
                 s_totalCollectedFunds -= buyerRefundAmount;
                 s_vendorSharesPool -= vendorShareToDeduct;
 
-                i_usdc.transfer(buyer, buyerRefundAmount);
+                i_usdc.safeTransfer(buyer, buyerRefundAmount);
                 totalRefunded += buyerRefundAmount;
 
                 emit BuyerRefunded(

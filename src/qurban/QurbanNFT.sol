@@ -24,7 +24,9 @@ contract QurbanNFT is ERC721, ERC721Enumerable, ERC721URIStorage, Governed {
         string memory uri
     ) public onlyRole(GOVERNER_ROLE) returns (uint256) {
         uint256 tokenId = _nextTokenId++;
-        _safeMint(to, tokenId);
+        // _mint, not _safeMint: a buyer that rejects NFTs must not block
+        // certificates, vendor payout and fees for everyone else
+        _mint(to, tokenId);
         _setTokenURI(tokenId, uri);
         return tokenId;
     }
