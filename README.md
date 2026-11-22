@@ -64,3 +64,12 @@ $ forge --help
 $ anvil --help
 $ cast --help
 ```
+
+## Deploy to Arbitrum Sepolia
+
+Lisk Sepolia was shut down. The Qurban contracts now deploy to Arbitrum Sepolia and use Circle's test USDC.
+The deployer becomes the governor, so this script is for the testnet only.
+
+```bash
+forge script script/DeployQurban.s.sol --rpc-url https://sepolia-rollup.arbitrum.io/rpc --account <keystore> --broadcast
+```
